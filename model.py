@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import os
 from tqdm import tqdm, trange
 from tensorflow.examples.tutorials.mnist import input_data
 
@@ -11,12 +12,14 @@ class wic_model():
     def __init__(self, sess, args):
 
         self.sess = sess
+        self.model_name = args['--model_name']
         self.batch_size = int(args['--batch_size'])
         self.train_epoch = int(args['--epoch'])
         self.dim = int(args['--dim'])
         self.lr = float(args['--lr'])
         self.dataset_dir = args['--dataset_dir']
         self.tensorboard_dir = args['--tensorboard_dir']
+        self.cp_dir = args['--checkpoint_dir']
         self.train_writer = tf.summary.FileWriter(self.tensorboard_dir + '/train', sess.graph)
         self.test_writer = tf.summary.FileWriter(self.tensorboard_dir + '/test', sess.graph)
 
@@ -26,16 +29,17 @@ class wic_model():
 
     def build(self):
 
-        self.x = tf.placeholder(tf.float32, [self.batch_size, self.img_h, self.img_w, self.img_ch])
+        self.x = tf.placeholder(tf.float32, [self.batch_size, 784])
+        self.x_ = tf.image.resize_images(tf.reshape(self.x, [-1, 28, 28, 1]), [self.img_h, self.img_w])*2.-1.
         self.a = tf.placeholder(tf.float32, [self.batch_size, self.a_num])
         self.a_1h = tf.placeholder(tf.float32, [self.batch_size, self.a_num * 2])
         self.lmda_e = tf.placeholder(tf.float32, [1])
 
-        self.y_enc = self.encoder(self.x)
+        self.y_enc = self.encoder(self.x_)
         self.x_dec = self.decoder(self.y_enc, self.a_1h)
         self.o_disc = self.discriminator(self.y_enc)
 
-        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x, self.x_dec)))
+        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec)))
         self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ) ))
         self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ) ))
         self.ae_loss = self.gen_loss - self.lmda_e * self.enc_loss
@@ -59,7 +63,7 @@ class wic_model():
             tf.summary.scalar(k, mean_val, collections=['train', 'test'])
             self.update_met_list.append(update_op)
         
-        tf.summary.image('output_image', tf.cast(self.x_dec, tf.uint8), self.batch_size, collections=['train', 'test'])
+        tf.summary.image('output_image', tf.cast((self.x_dec+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if (('w' in v.name) or ('bn' in v.name))]
 
         self.train_merged = tf.summary.merge_all(key='train')
@@ -132,8 +136,8 @@ class wic_model():
         mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
 
         tf.global_variables_initializer().run()
-        saver = tf.train.Saver()
-        per_epoch = mnist.train.labels.shape[0]
+        self.saver = tf.train.Saver()
+        per_epoch = mnist.train.labels.shape[0] // self.batch_size
 
         for epoch in trange(self.train_epoch, desc='epoch'):
 
@@ -143,7 +147,6 @@ class wic_model():
 
                 lmda_e = 0.0001 * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
                 train_x, train_a = mnist.train.next_batch(self.batch_size)
-                train_x = self.sess.run(tf.image.resize_images(tf.reshape(train_x, [-1, 28, 28, 1]), [self.img_h, self.img_w]))
                 train_a_1h = self.trans_a(train_a)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e]}
 
@@ -152,3 +155,9 @@ class wic_model():
 
             train_summary = self.sess.run(self.train_merged, feed_dict = train_feed)
             self.train_writer.add_summary(train_summary, epoch)
+            if epoch % 10 == 0: self.save_model(epoch)
+
+    def save_model(self, epoch):
+        file_name = self.model_name+"_e%05d.model" % epoch
+        if not os.path.exists(self.cp_dir): os.makedirs(self.cp_dir)
+        self.saver.save(self.sess, os.path.join(self.cp_dir, file_name))
