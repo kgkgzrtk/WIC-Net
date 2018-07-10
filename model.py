@@ -13,6 +13,7 @@ class wic_model():
 
         self.sess = sess
         self.model_name = args['--model_name']
+        self.load_name = args['--load_name']
         self.batch_size = int(args['--batch_size'])
         self.train_epoch = int(args['--epoch'])
         self.dim = int(args['--dim'])
@@ -38,10 +39,11 @@ class wic_model():
         self.y_enc = self.encoder(self.x_)
         self.x_dec = self.decoder(self.y_enc, self.a_1h)
         self.o_disc = self.discriminator(self.y_enc)
-
-        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec)))
-        self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ) ))
-        self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ) ))
+        
+        # without batch dimension.
+        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec), axis=[1, 2, 3]))
+        self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ), axis=1))
+        self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ), axis=1))
         self.ae_loss = self.gen_loss - self.lmda_e * self.enc_loss
 
         optimizer = tf.train.AdamOptimizer(self.lr, beta1=0.5)
@@ -63,7 +65,7 @@ class wic_model():
             tf.summary.scalar(k, mean_val, collections=['train', 'test'])
             self.update_met_list.append(update_op)
         
-        tf.summary.image('output_image', tf.cast((self.x_dec+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        self.sum_img = tf.summary.image('output_image', tf.cast((self.x_dec+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if (('w' in v.name) or ('bn' in v.name))]
 
         self.train_merged = tf.summary.merge_all(key='train')
@@ -131,8 +133,7 @@ class wic_model():
         return o
 
     def train(self):
-
-        self.build()
+        #pre-dataset
         mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
 
         tf.global_variables_initializer().run()
@@ -145,7 +146,7 @@ class wic_model():
 
             for i in trange(per_epoch):
 
-                lmda_e = 0.0001 * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
+                lmda_e = 1e-5 * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
                 train_x, train_a = mnist.train.next_batch(self.batch_size)
                 train_a_1h = self.trans_a(train_a)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e]}
@@ -161,3 +162,18 @@ class wic_model():
         file_name = self.model_name+"_e%05d.model" % epoch
         if not os.path.exists(self.cp_dir): os.makedirs(self.cp_dir)
         self.saver.save(self.sess, os.path.join(self.cp_dir, file_name))
+
+    def load_model(self):
+        self.saver = tf.train.Saver()
+        self.saver.restore(self.sess, os.path.join(self.cp_dir, self.load_name))
+    
+    def mnist_run(self):
+        mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
+        image, label = mnist.test.next_batch(self.batch_size)
+        label_ = np.roll(label, 1)
+        label_li = [(1.-i)*label + i*label_ for i in np.arange(0.0, 1.1, 0.1)]
+        for i, a in enumerate(label_li):
+            a_1h = self.trans_a(a)
+            feed_dict = {self.x: image, self.a: a, self.a_1h: a_1h, self.lmda_e: [0]}
+            sum_img = self.sess.run(self.sum_img, feed_dict)
+            self.test_writer.add_summary(sum_img, i)

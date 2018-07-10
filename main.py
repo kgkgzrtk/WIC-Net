@@ -2,14 +2,15 @@
 Weather image creation.
 
 Usage:
-    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR]
+    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR] [--load_name=FILE_NAME]
     main.py -h | --help
 
 Option:
     -h, --help      : Show this screen.
     --model_name=MODEL_N   : The name of model. [default: wic-net]
-    --epoch=EPOCH   : The number of epoch to train on. [default: 1000]
-    --lr=LR         : Learning rate. [default: 2e-4]
+    --load_name=FILE_NAME :The name of file for restore learned model.
+    --epoch=EPOCH   : The number of epoch to train on. [default: 64]
+    --lr=LR         : Learning rate. [default: 2e-3]
     --dataset_dir=DATASET_DIR   : The path of the dataset directory. [default: ./data]
     --tensorboard_dir = TB_DIR  : The path of TensorBoard directory. [default: ./results/tensorboard]
     --checkpoint_dir = CP_DIR  : The path of checkpoint directory. [default: ./results/checkpoint]
@@ -29,7 +30,12 @@ def main():
     #config.gpu_options.allow_growth=True
     with tf.Session(config=config) as sess:
         model = wic_model(sess, args)
-        model.train()
+        model.build()
+        if model.load_name is None:
+            model.train()
+        else:
+            model.load_model()
+            model.mnist_run()
         sess.close()
 
 if __name__ == "__main__":
