@@ -21,17 +21,18 @@ class wic_model():
         self.dataset_dir = args['--dataset_dir']
         self.tensorboard_dir = args['--tensorboard_dir']
         self.cp_dir = args['--checkpoint_dir']
+        self.max_lmda = float(args['--max_lmda'])
         self.train_writer = tf.summary.FileWriter(self.tensorboard_dir + '/train', sess.graph)
         self.test_writer = tf.summary.FileWriter(self.tensorboard_dir + '/test', sess.graph)
 
         self.eps = 1e-8
-        self.a_num = 10
-        self.img_h, self.img_w, self.img_ch = (256, 256, 1)
+        self.a_num = 7
+        self.img_h, self.img_w, self.img_ch = (256, 256, 3)
 
     def build(self):
 
-        self.x = tf.placeholder(tf.float32, [self.batch_size, 784])
-        self.x_ = tf.image.resize_images(tf.reshape(self.x, [-1, 28, 28, 1]), [self.img_h, self.img_w])*2.-1.
+        self.x = tf.placeholder(tf.float32, [self.batch_size, 784, 3])
+        self.x_ = tf.image.resize_images(tf.reshape(self.x, [-1, 28, 28, 3]), [self.img_h, self.img_w])*2.-1.
         self.a = tf.placeholder(tf.float32, [self.batch_size, self.a_num])
         self.a_1h = tf.placeholder(tf.float32, [self.batch_size, self.a_num * 2])
         self.lmda_e = tf.placeholder(tf.float32, [1])
@@ -132,6 +133,17 @@ class wic_model():
                 o[i][2*j+int(a[i][j])] = 1
         return o
 
+    def swap_col(self, gray_images):
+        b_arr = [np.unpackbits(x)[-3:] for x in np.arange(1,8, dtype=np.uint8)]
+        label_arr = np.eye(len(b_arr))
+        col_images = []
+        labels = []
+        for img in gray_images:
+            ind = np.random.randint(len(b_arr))
+            col_images.append(b_arr[ind] * np.stack((img,)*3, -1))
+            labels.append(label_arr[ind])
+        return col_images, labels
+
     def train(self):
         #pre-dataset
         mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
@@ -146,8 +158,9 @@ class wic_model():
 
             for i in trange(per_epoch):
 
-                lmda_e = 1e-5 * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
-                train_x, train_a = mnist.train.next_batch(self.batch_size)
+                lmda_e = self.max_lmda * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
+                images, _ = mnist.train.next_batch(self.batch_size)
+                train_x, train_a = self.swap_col(images)
                 train_a_1h = self.trans_a(train_a)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e]}
 
