@@ -130,7 +130,8 @@ class wic_model():
         o = np.zeros([len_a, self.a_num * 2])
         for i in range(len_a):
             for j in range(self.a_num):
-                o[i][2*j+int(a[i][j])] = 1
+                o[i][2*j] = 1.-a[i][j]
+                o[i][2*j+1] = a[i][j]
         return o
 
     def swap_col(self, gray_images):
@@ -141,7 +142,7 @@ class wic_model():
         for img in gray_images:
             ind = np.random.randint(len(b_arr))
             col_images.append(b_arr[ind] * np.stack((img,)*3, -1))
-            labels.append(label_arr[ind])
+            labels.append(label_arr[ind].astype(np.float32))
         return col_images, labels
 
     def train(self):
@@ -182,11 +183,12 @@ class wic_model():
     
     def mnist_run(self):
         mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
-        image, label = mnist.test.next_batch(self.batch_size)
+        images, _ = mnist.test.next_batch(self.batch_size)
+        test_x, label = self.swap_col(images)
         label_ = np.roll(label, 1)
-        label_li = [(1.-i)*label + i*label_ for i in np.arange(0.0, 1.1, 0.1)]
+        label_li = [(1.-i)*np.array(label) + i*label_ for i in np.arange(0.0, 1.1, 0.1)]
         for i, a in enumerate(label_li):
             a_1h = self.trans_a(a)
-            feed_dict = {self.x: image, self.a: a, self.a_1h: a_1h, self.lmda_e: [0]}
+            feed_dict = {self.x: test_x, self.a: a, self.a_1h: a_1h, self.lmda_e: [0]}
             sum_img = self.sess.run(self.sum_img, feed_dict)
             self.test_writer.add_summary(sum_img, i)
