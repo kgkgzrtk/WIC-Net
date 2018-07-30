@@ -3,6 +3,7 @@ import numpy as np
 import os
 from tqdm import tqdm, trange
 from tensorflow.examples.tutorials.mnist import input_data
+from datetime import datetime
 
 from ops import *
 
@@ -26,13 +27,13 @@ class wic_model():
         self.test_writer = tf.summary.FileWriter(self.tensorboard_dir + '/test', sess.graph)
 
         self.eps = 1e-8
-        self.a_num = 7
+        self.a_num = 6
         self.img_h, self.img_w, self.img_ch = (256, 256, 3)
 
     def build(self):
 
-        self.x = tf.placeholder(tf.float32, [self.batch_size, 784, 3])
-        self.x_ = tf.image.resize_images(tf.reshape(self.x, [-1, 28, 28, 3]), [self.img_h, self.img_w])*2.-1.
+        self.x = tf.placeholder(tf.float32, [self.batch_size, 256, 256, 3])
+        self.x_ = self.data_augment(self.x)
         self.a = tf.placeholder(tf.float32, [self.batch_size, self.a_num])
         self.a_1h = tf.placeholder(tf.float32, [self.batch_size, self.a_num * 2])
         self.lmda_e = tf.placeholder(tf.float32, [1])
@@ -42,7 +43,7 @@ class wic_model():
         self.o_disc = self.discriminator(self.y_enc)
         
         # without batch dimension.
-        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec), axis=[1, 2, 3]))
+        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.abs(self.x_-self.x_dec), axis=[1, 2, 3]))
         self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ), axis=1))
         self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ), axis=1))
         self.ae_loss = self.gen_loss - self.lmda_e * self.enc_loss
@@ -67,6 +68,7 @@ class wic_model():
             self.update_met_list.append(update_op)
         
         self.sum_img = tf.summary.image('output_image', tf.cast((self.x_dec+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        self.x_img = tf.summary.image('x_image', tf.cast((self.x_+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if (('w' in v.name) or ('bn' in v.name))]
 
         self.train_merged = tf.summary.merge_all(key='train')
@@ -112,7 +114,7 @@ class wic_model():
             
             a7 = tf.concat([a6]*4, axis=1)
             d6 = tf.concat([d6, tf.reshape(a7, [-1, 128, 128, 2*self.a_num])], 3)
-            d7 = deconv(d6, 3, name='d7')
+            d7 = deconv(d6, 3, name='d7', func=False, bn=False)
             
             return tf.nn.tanh(d7)
 
@@ -146,22 +148,22 @@ class wic_model():
         return col_images, labels
 
     def train(self):
-        #pre-dataset
-        mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
+        self.load_data()
 
         tf.global_variables_initializer().run()
         self.saver = tf.train.Saver()
-        per_epoch = mnist.train.labels.shape[0] // self.batch_size
+        per_epoch = len(self.train_image) // self.batch_size
 
         for epoch in trange(self.train_epoch, desc='epoch'):
 
             tf.local_variables_initializer().run()
 
             for i in trange(per_epoch):
+                batch = self.batch_size * i
 
                 lmda_e = self.max_lmda * (epoch * per_epoch + i) / (per_epoch * self.train_epoch)
-                images, _ = mnist.train.next_batch(self.batch_size)
-                train_x, train_a = self.swap_col(images)
+                train_x = self.train_image[batch:batch+self.batch_size]
+                train_a = self.train_attr[batch:batch+self.batch_size]
                 train_a_1h = self.trans_a(train_a)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e]}
 
@@ -180,7 +182,81 @@ class wic_model():
     def load_model(self):
         self.saver = tf.train.Saver()
         self.saver.restore(self.sess, os.path.join(self.cp_dir, self.load_name))
-    
+   
+    def load_data(self, data_dir='../../weather/twitter/'):
+        filename = 'fusion03030205sky.csv'
+        df = pd.read_csv(data_dir+filename, engine='python')
+        df_ = df.loc[:,['temp', 'humidity', 'clouds', 'rain', 'snow']]
+        df_a_norm = self.normalize(df_)
+        df_['hour'] = pd.to_datetime(df['date'].astype(int), unit='s').dt.hour
+        df_marged = pd.concat([df['tweetID'].astype(str), df_['hour'], df_a_norm], axis=1, sort=False).fillna(0)
+        self.train_image = []
+        self.train_attr = []
+        for ind, row in tqdm(df_marged.iterrows()):
+            #load image
+            fn = row['tweetID']
+            try:
+                img = Image.open(data_dir + '0303_0205_sky/' + fn + '.jpg', 'r')
+            except:
+                print('not found '+fn+'.jpg')
+                continue
+            img = img.resize((256,256))
+            #load sensor vals
+            row['hour'] = row['hour']/24.
+            attr = row[1:].values
+
+            self.train_image.append(np.asarray(img)/255.*2.-1.)
+            self.train_attr.append(attr)
+
+    def normalize(self, df):
+        df_ = df.copy()
+        for c_name in df.columns:
+            max_ = df[c_name].max()
+            min_ = df[c_name].min()
+            df_[c_name] = (df[c_name] - min_)/(max_ - min_)
+        return df_
+
+    def data_augment(self, imgs):
+        imgs_ = []
+        for img in tf.split(imgs, self.batch_size):
+            img = tf.squeeze(img)
+            img = tf.image.random_flip_left_right(img)
+            rotation = 10
+            rnd_theta = np.random.uniform(-rotation*(np.pi/180.), rotation*(np.pi/180.))
+            img = tf.contrib.image.rotate(img, rnd_theta)
+            abs_theta = np.absolute(rnd_theta)
+            crop_size_h = int(self.img_h * ((np.cos(abs_theta)/(np.sin(abs_theta)+np.cos(abs_theta)))**2))
+            crop_size_w = int(crop_size_h*(self.img_w/self.img_h))
+            img = tf.image.resize_image_with_crop_or_pad(img, crop_size_h, crop_size_w)
+
+            #Random crop
+            rnd_scale = np.random.uniform(1.0, 1.5)
+            img = tf.image.resize_images(img, [int(self.img_h*rnd_scale), int(self.img_w*rnd_scale)])
+            img = tf.random_crop(img, [self.img_h, self.img_w, 3])
+
+            #Random brightness & contrast
+            img = tf.image.random_brightness(img, 30)
+            img = tf.image.random_contrast(img, lower=0.7, upper=1.3)
+
+            imgs_.append(img)
+
+        return tf.stack(imgs_)
+
+    def weather_run(self):
+        self.load_data()
+        images = self.train_image[:self.batch_size]
+        attrs = np.array(self.train_attr[:self.batch_size])
+        new_attrs = np.array(attrs)
+        new_attrs[:,0] = 0.
+        attr_li = [(1.-i)*attrs + i*new_attrs for i in np.arange(0.0, 1.1, 0.1)]
+        for i, a in enumerate(attr_li):
+            a_1h = self.trans_a(a)
+            feed_dict = {self.x: images, self.a: a, self.a_1h: a_1h, self.lmda_e: [0]}
+            sum_image, x_image = self.sess.run([self.sum_img, self.x_img], feed_dict)
+            self.test_writer.add_summary(sum_image, i)
+            self.test_writer.add_summary(x_image, i)
+
+
     def mnist_run(self):
         mnist = input_data.read_data_sets(self.dataset_dir, one_hot=True)
         images, _ = mnist.test.next_batch(self.batch_size)
@@ -190,5 +266,6 @@ class wic_model():
         for i, a in enumerate(label_li):
             a_1h = self.trans_a(a)
             feed_dict = {self.x: test_x, self.a: a, self.a_1h: a_1h, self.lmda_e: [0]}
-            sum_img = self.sess.run(self.sum_img, feed_dict)
-            self.test_writer.add_summary(sum_img, i)
+            sum_image, x_image = self.sess.run([self.sum_img, self.x_img], feed_dict)
+            self.test_writer.add_summary(sum_image, i)
+            self.test_writer.add_summary(x_image, i)

@@ -36,7 +36,7 @@ def main():
             model.train()
         else:
             model.load_model()
-            model.mnist_run()
+            model.weather_run()
         sess.close()
 
 if __name__ == "__main__":

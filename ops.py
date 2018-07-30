@@ -26,7 +26,7 @@ def linear(input_, output_size, name='linear_layer'):
         b = tf.get_variable('b', [output_size], initializer=tf.constant_initializer(0.0))
         return tf.matmul(input_, W) + b
 
-def conv(image, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=False, func_factor=0.2):
+def conv(image, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=True, func_factor=0.2):
     with tf.variable_scope(name) as scope:
         W = tf.get_variable('w', [c, c, image.get_shape().dims[-1].value, out_dim], initializer=tf.truncated_normal_initializer(stddev=stddev))
         b = tf.get_variable('b', [out_dim], initializer=tf.constant_initializer(0.0))
@@ -59,9 +59,10 @@ def gaussian_noise_layer(x, std=0.05):
     noise = tf.random_normal(shape=tf.shape(x), mean=0.0, stddev=std) 
     return x + noise
 
-def resize_conv(image, output_shape, name, c=4, k=1, bn=True):
-    image = tf.image.resize_bilinear(image, [output_shape[1], output_shape[2]])
-    y = conv(image, output_shape[-1], name=name, c=c, k=k, bn=bn, padding='SAME')
+def resize_conv(image, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True, dropout=False):
+    image = tf.image.resize_bilinear(image, [image.shape[1]*2, image.shape[2]*2])
+    if dropout: image = tf.nn.dropout(image, keep_prob=0.7)
+    y = conv(image, out_dim, name=name, c=c, k=k, bn=bn, padding='SAME', func=func)
     return y
 
 def pixel_shuffler(image, out_shape, r=2, c=4, name='ps', bn=True):
