@@ -257,9 +257,9 @@ class wic_model():
                 swap_feed = {self.x: disp_x, self.a: a_s, self.a_1h: a_s_1h, self.lmda_e: [0], self.training: False}
                 swap_img = self.sess.run(self.x_dec, feed_dict=swap_feed)
                 swap_img_li.append((swap_img+1.)*127.5)
-            swapped = np.resize(np.transpose(swap_img_li, [1, 3, 0, 2, 4]), [256*16, 256*11, 3])
+            swapped = np.resize(np.transpose(swap_img_li, [1, 2, 0, 3, 4]), [256*16, 256*11, 3])
             swapped_img = Image.fromarray(swapped.astype('uint8'))
-            swapped_img.save('./results/swapped/swap_e%5d.jpg'%epoch)
+            swapped_img.save('./results/swapped/swap_e%05d.jpg'%epoch)
 
             disp_feed = {self.x: disp_x, self.a: disp_a, self.a_1h: disp_a_1h, self.lmda_e: [0], self.training: False}
             disp_summary = self.sess.run(self.test_merged, feed_dict=disp_feed)
