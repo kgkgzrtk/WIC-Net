@@ -40,30 +40,32 @@ def conv(image, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=
                 y = tf.nn.relu(y, name='relu')
         return y
 
-def deconv(image, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=False, func_factor=0.2):
-    with tf.variable_scope(name) as scope:
-        y = tf.contrib.layers.conv2d_transpose(image, out_dim, [c, c], [k, k], padding,
-                activation_fn=None,
-                weights_initializer=tf.truncated_normal_initializer(stddev=stddev),
-                )
-        if bn:
-            y = tf.contrib.layers.batch_norm(y, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, scope='bn')
-        if func:
-            if func_factor != 0:
-                y = lrelu(y, leak=func_factor)
-            else:
-                y = tf.nn.relu(y, name='relu')
-        return y
+def deconv(image, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=True, func_factor=0.2, resize=False):
+    if resize:
+        return resize_conv(image, out_dim, bn=bn, name=name, func=func)
+    else:
+        with tf.variable_scope(name) as scope:
+            y = tf.contrib.layers.conv2d_transpose(image, out_dim, [c, c], [k, k], padding,
+                    activation_fn=None,
+                    weights_initializer=tf.truncated_normal_initializer(stddev=stddev),
+                    )
+            if bn:
+                y = tf.contrib.layers.batch_norm(y, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, scope='bn')
+            if func:
+                if func_factor != 0:
+                    y = lrelu(y, leak=func_factor)
+                else:
+                    y = tf.nn.relu(y, name='relu')
+            return y
 
 def gaussian_noise_layer(x, std=0.05):
     noise = tf.random_normal(shape=tf.shape(x), mean=0.0, stddev=std) 
     return x + noise
 
-def resize_conv(image, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True, dropout=False):
-    image = tf.image.resize_bilinear(image, [image.shape[1]*2, image.shape[2]*2])
-    if dropout: image = tf.nn.dropout(image, keep_prob=0.7)
-    y = conv(image, out_dim, name=name, c=c, k=k, bn=bn, padding='SAME', func=func)
-    return y
+def resize_conv(image, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True):
+        image = tf.image.resize_bilinear(image, [image.shape[1]*2, image.shape[2]*2])
+        y = conv(image, out_dim, c=c, k=k, name=name, bn=bn, padding='SAME', func=func, func_factor=0)
+        return y
 
 def pixel_shuffler(image, out_shape, r=2, c=4, name='ps', bn=True):
     with tf.variable_scope(name) as scope:

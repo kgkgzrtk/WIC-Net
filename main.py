@@ -2,7 +2,7 @@
 Weather image creation.
 
 Usage:
-    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR] [--load_name=FILE_NAME] [--max_lmda=LAMBDA]
+    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR] [--load_name=FILE_NAME] [--max_lmda=LAMBDA] [--reg_scale=REG_S]
     main.py -h | --help
 
 Option:
@@ -17,6 +17,7 @@ Option:
     --batch_size=BATCH_SIZE     : The number of batch size. [default: 16]
     --dim=DIM       : The channel dimention of model. [default: 16]
     --max_lmda=LAMBDA   :the learning param. [default: 1e-4]
+    --reg_scale=REG_S   :the learning param. [default: 1e-5]
 
 """
 import tensorflow as tf
