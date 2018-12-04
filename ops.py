@@ -26,11 +26,16 @@ def linear(input_, output_size, name='linear_layer'):
         b = tf.get_variable('b', [output_size], initializer=tf.constant_initializer(0.0))
         return tf.matmul(input_, W) + b
 
-def conv(image, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=True, func_factor=0.2):
+def conv(x, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.2):
     with tf.variable_scope(name) as scope:
-        W = tf.get_variable('w', [c, c, image.get_shape().dims[-1].value, out_dim], initializer=tf.truncated_normal_initializer(stddev=stddev))
+        W = tf.get_variable('w', [c, c, x.get_shape().dims[-1].value, out_dim], initializer=tf.truncated_normal_initializer(stddev=stddev))
         b = tf.get_variable('b', [out_dim], initializer=tf.constant_initializer(0.0))
-        y = tf.nn.conv2d(image, W, strides=[1, k, k, 1], padding=padding) + b
+
+        if sn: filter_ = spec_norm(W)
+        else: filter_ = W
+
+        y = tf.nn.conv2d(x, filter_, strides=[1, k, k, 1], padding=padding) + b
+
         if bn: 
             y = tf.contrib.layers.batch_norm(y, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, scope='bn')
         if func:
@@ -40,36 +45,42 @@ def conv(image, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=
                 y = tf.nn.relu(y, name='relu')
         return y
 
-def deconv(image, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, func=True, func_factor=0.2, resize=False):
-    if resize:
-        return resize_conv(image, out_dim, bn=bn, name=name, func=func)
-    else:
-        with tf.variable_scope(name) as scope:
-            y = tf.contrib.layers.conv2d_transpose(image, out_dim, [c, c], [k, k], padding,
-                    activation_fn=None,
-                    weights_initializer=tf.truncated_normal_initializer(stddev=stddev),
-                    )
-            if bn:
-                y = tf.contrib.layers.batch_norm(y, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, scope='bn')
-            if func:
-                if func_factor != 0:
-                    y = lrelu(y, leak=func_factor)
-                else:
-                    y = tf.nn.relu(y, name='relu')
-            return y
+def deconv(x, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.2):
+    with tf.variable_scope(name) as scope:
+        x_shape = x.get_shape().as_list()
+        out_shape = [x_shape[0], x_shape[1]*k, x_shape[2]*k, out_dim]
+        W = tf.get_variable('w', [c, c, out_dim, x.get_shape()[-1]], initializer=tf.truncated_normal_initializer(stddev=stddev))
+        b = tf.get_variable('b', [out_dim], initializer=tf.constant_initializer(0.0))
+
+        if sn: filter_ = spec_norm(W)
+        else: filter_ = W
+
+        y = tf.nn.conv2d_transpose(x, filter_, out_shape, strides=[1, k, k, 1], padding=padding)
+            
+        if bn:
+            y = tf.contrib.layers.batch_norm(y, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, scope='bn')
+        if func:
+            if func_factor != 0:
+                y = lrelu(y, leak=func_factor)
+            else:
+                y = tf.nn.relu(y, name='relu')
+        return y
 
 def gaussian_noise_layer(x, std=0.05):
     noise = tf.random_normal(shape=tf.shape(x), mean=0.0, stddev=std) 
     return x + noise
 
-def resize_conv(image, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True):
-        image = tf.image.resize_bilinear(image, [image.shape[1]*2, image.shape[2]*2])
-        y = conv(image, out_dim, c=c, k=k, name=name, bn=bn, padding='SAME', func=func, func_factor=0)
+def upsampling(x, out_dim, scale=2, name='resize'):
+    return tf.image.resize_bilinear(x, [x.shape[1]*scale, x.shape[2]*scale])
+
+def resize_conv(x, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True):
+        x = tf.image.resize_bilinear(x, [x.shape[1]*2, x.shape[2]*2])
+        y = conv(x, out_dim, c=c, k=k, name=name, bn=bn, padding='SAME', func=func, func_factor=0)
         return y
 
-def pixel_shuffler(image, out_shape, r=2, c=4, name='ps', bn=True):
+def pixel_shuffler(x, out_shape, r=2, c=4, name='ps', bn=True):
     with tf.variable_scope(name) as scope:
-        y_conv = conv(image, out_shape[3]*(r**2), c=c, k=1, bn=bn)
+        y_conv = conv(x, out_shape[3]*(r**2), c=c, k=1, bn=bn)
         y_list = tf.split(y_conv, out_shape[3], 3)
         pix_map_list = []
         for y in y_list:
@@ -84,3 +95,24 @@ def pixel_shuffler(image, out_shape, r=2, c=4, name='ps', bn=True):
             pix_map_list.append(pix_map)
         out = tf.concat(pix_map_list, 3)
         return out
+
+def hw_flatten(x):
+    return tf.reshape(x, shape=[x.shape[0], -1, x.shape[-1]])
+
+def l2_norm(v, eps=1e-12):
+    return v / (tf.reduce_sum(v**2)**0.5+eps)
+
+def spec_norm(w):
+    w_shape = w.shape.as_list()
+    w = tf.reshape(w, [-1, w_shape[-1]])
+    u = tf.get_variable("u", [1, w_shape[-1]], initializer=tf.truncated_normal_initializer(), trainable=False)
+    u_hat = u
+    v_ = tf.matmul(u_hat, tf.transpose(w))
+    v_hat = l2_norm(v_)
+    u_ = tf.matmul(v_hat, w)
+    u_hat = l2_norm(u_)
+    sigma = tf.matmul(tf.matmul(v_hat, w), tf.transpose(u_hat))
+    w_norm = w/sigma
+    with tf.control_dependencies([u.assign(u_hat)]):
+        w_norm = tf.reshape(w_norm, w_shape)
+    return w_norm

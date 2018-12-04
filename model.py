@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import pandas as pd
 import os
+import glob
 
 from PIL import Image
 from tqdm import tqdm, trange
@@ -9,6 +10,7 @@ from tensorflow.examples.tutorials.mnist import input_data
 from datetime import datetime
 
 from ops import *
+from data_io import *
 
 
 class wic_model():
@@ -27,7 +29,6 @@ class wic_model():
         self.cp_dir = args['--checkpoint_dir']
         self.max_lmda = float(args['--max_lmda'])
         self.reg_scale = float(args['--reg_scale'])
-        self.gp_scale = 10.
 
         self.train_writer = tf.summary.FileWriter(self.tensorboard_dir + '/train', sess.graph)
         self.test_writer = tf.summary.FileWriter(self.tensorboard_dir + '/test', sess.graph)
@@ -49,39 +50,23 @@ class wic_model():
         self.y_enc = self.encoder(self.x_)
         self.x_dec = self.decoder(self.y_enc, self.a_1h)
         self.o_disc = self.discriminator(self.y_enc)
-
-        c_real, c_fake = self.critic(self.x_), self.critic(self.x_dec, reuse=True)
-        o_c_real, o_c_fake = c_real[-1], c_fake[-1]
-        o_h_real, o_h_fake = c_real[:-1], c_fake[:-1]
-        c_h_loss_li = []
-        for c_r, c_f in zip(o_h_real, o_h_fake):
-            c_h_loss_li.append(
-                    tf.reduce_mean(tf.reduce_sum(tf.abs(c_r - c_f), axis=[1, 2, 3]))
-                )
-        c_h_loss = tf.reduce_mean(c_h_loss_li)
-
-        gp = self.gradient_penalty() * self.gp_scale
-        w_distance = tf.reduce_mean(o_c_real - o_c_fake)
-
-        #self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec), axis=[1, 2, 3]))
-        self.gen_loss = tf.reduce_mean(-o_c_fake) + c_h_loss
+        
+        #losses
+        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec), axis=[1, 2, 3]))
         self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ), axis=1))
         self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ), axis=1))
         self.ae_loss = self.gen_loss - self.lmda_e * self.enc_loss
-        self.crit_loss = -w_distance + gp
 
-        optimizer = tf.train.AdamOptimizer(self.lr, beta1=0.5)
+        optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
         train_vars = tf.trainable_variables()
         ae_vars = [v for v in train_vars if 'ae' in v.name]
         disc_vars = [v for v in train_vars if 'disc' in v.name]
-        crit_vars = [v for v in train_vars if 'crit' in v.name]
 
         self.L1_weight_penalty = tf.add_n([tf.reduce_sum(tf.abs(w)) for w in ae_vars if 'w' in w.name])
         self.weight_penalty = self.reg_scale * self.L1_weight_penalty
 
         self.ae_optimizer = optimizer.minimize(self.ae_loss + self.weight_penalty, var_list=ae_vars)
         self.disc_optimizer = optimizer.minimize(self.disc_loss, var_list=disc_vars)
-        self.crit_optimizer = optimizer.minimize(self.crit_loss, var_list=crit_vars)
 
         RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - self.x_dec),[1, 2, 3])/(self.img_h * self.img_w)))
         
@@ -89,16 +74,12 @@ class wic_model():
             'loss/gen': self.gen_loss,
             'loss/disc': self.disc_loss,
             'loss/ae':  self.ae_loss,
-            'loss/crit': self.crit_loss,
-            'loss/c_h_loss': c_h_loss,
             'loss/rms': RMS_loss, 
-            'wasserstain': w_distance,
-            'gp':   gp
         }
 
         self.update_met_list = []
         for k, v in summary_dict.items():
-            mean_val, update_op = tf.contrib.metrics.streaming_mean(v, name=k)
+            mean_val, update_op = tf.metrics.mean(v, name=k)
             tf.summary.scalar(k, mean_val, collections=['train', 'test'])
             self.update_met_list.append(update_op)
         
@@ -113,30 +94,54 @@ class wic_model():
         self.test_merged = tf.summary.merge_all(key='test')
         self.merged = tf.summary.merge_all()
 
+    def res_block_down(self, x, o_dim, name='res_block_down'):
+        with tf.variable_scope(name) as scope:
+            c_s = conv(x, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
+            c_s = tf.layers.average_pooling2d(c_s, 2, 2, padding='same', name='avrpoo')
+            c1 = conv(x, o_dim, c=3, k=1, name='conv1', func_factor=0)
+            c2 = conv(c1, o_dim, c=3, k=2, name='conv2', func_factor=0)
+        return c_s + c2
+
+    def res_block_up(self, x, a, o_dim, name='res_block_up'):
+        with tf.variable_scope(name) as scope:
+            c_s = conv(x, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
+            c_s = upsampling(c_s, o_dim, name='up')
+            c1 = conv(x, o_dim, c=3, k=1, name='conv1', func_factor=0)
+            c2 = conv(c1, o_dim, c=3, k=2, name='conv2', func_factor=0)
+        return c_s + c2
+
+
+
     def encoder(self, x, name='ae_enc'):
         with tf.variable_scope(name) as scope:
             c1 = conv(x, self.dim, name='c1')
             c2 = conv(c1, self.dim * 2, name='c2')
             c3 = conv(c2, self.dim * 4, name='c3')
+            c3 = self.attention(c3, self.dim * 4)
+
             c4 = conv(c3, self.dim * 8, name='c4')
             c5 = conv(c4, self.dim * 16, name='c5')
             c6 = conv(c5, self.dim * 32, name='c6')
             c7 = conv(c6, self.dim * 32, name='c7')
             return c7
-    
+
     def decoder(self, y, a, name='ae_dec'):
         with tf.variable_scope(name) as scope:
             a1 = tf.transpose(tf.stack([a]*4),[1, 0, 2])
             d0 = tf.concat([y, tf.reshape(a1, [-1, 2, 2, 2*self.a_num])], 3)
             d1 = deconv(d0, self.dim * 32, name='d1')
+            d1 = tf.nn.dropout(d1, keep_prob=0.7)
             
             a2 = tf.concat([a1]*4, axis=1)
             d1 = tf.concat([d1, tf.reshape(a2, [-1, 4, 4, 2*self.a_num])], 3)
             d2 = deconv(d1, self.dim * 16, name='d2')
+            d2 = tf.nn.dropout(d2, keep_prob=0.7)
             
             a3 = tf.concat([a2]*4, axis=1)
             d2 = tf.concat([d2, tf.reshape(a3, [-1, 8, 8, 2*self.a_num])], 3)
             d3 = deconv(d2, self.dim * 8, name='d3')
+
+            d3 = self.attention(d3, self.dim*8)
             
             a4 = tf.concat([a3]*4, axis=1)
             d3 = tf.concat([d3, tf.reshape(a4, [-1, 16, 16, 2*self.a_num])], 3)
@@ -165,26 +170,19 @@ class wic_model():
             h3 = linear(h2, self.a_num, name='fc2')
             return tf.nn.sigmoid(h3)
 
-    def critic(self, image, reuse=False, name='crit'):
-        stddev = 0.02
-        with tf.variable_scope(name) as scope:
-            if reuse:
-                scope.reuse_variables()
-            dim = 32
-            h0_0 = conv(image, dim, k=1, stddev=stddev, bn=False, func=False, name='h0_0_conv')
-            h0_1 = conv(h0_0, dim, k=2, stddev=stddev, bn=False, func=True, name='h0_1_conv')
-            h1_0 = conv(h0_1, dim, k=1, stddev=stddev, bn=False, func=False, name='h1_0_conv')
-            h1_1 = conv(h1_0, dim*2, k=2, stddev=stddev, bn=False, func=True, name='h1_1_conv')
-            h2_0 = conv(h1_1, dim*2, k=1, stddev=stddev, bn=False, func=False, name='h2_0_conv')
-            h2_1 = conv(h2_0, dim*4, k=2, stddev=stddev, bn=False, func=True, name='h2_1_conv')
-            h3_0 = conv(h2_1, dim*4, k=1, stddev=stddev, bn=False, func=False, name='h3_0_conv')
-            h3_1 = conv(h3_0, dim*8, k=2, stddev=stddev, bn=False, func=True, name='h3_1_conv')
-            h4_0 = conv(h3_1, dim*4, k=1, stddev=stddev, bn=False, func=False, name='h4_0_conv')
-            h4_1 = conv(h4_0, dim*8, k=2, stddev=stddev, bn=False, func=True, name='h4_1_conv')
-            l_in = tf.reshape(h4_1, [self.batch_size, -1])
-            l0 = linear(l_in, 1, 'fc_c')
-            o_c = [image, h0_1, h1_1, h2_1, h3_1, l0]
-            return o_c
+
+    def attention(self, x, ch, sn=True, name='attention', reuse=False):
+        with tf.variable_scope(name) as scope: 
+            f = conv(x, ch // 8, c=1, k=1, bn=False, sn=sn, name='f_conv')
+            g = conv(x, ch // 8, c=1, k=1, bn=False, sn=sn, name='g_conv')
+            h = conv(x, ch, c=1, k=1, bn=False, sn=sn, name='h_conv')
+            s = tf.matmul(hw_flatten(g), hw_flatten(f), transpose_b=True)
+            beta = tf.nn.softmax(s, axis=-1)
+            o = tf.matmul(beta, hw_flatten(h))
+            gamma = tf.get_variable("gamma", [1], initializer=tf.constant_initializer(0.0))
+            o = tf.reshape(o, shape=x.shape)
+            x = gamma*o + x
+        return x
 
     def trans_a(self, a):
         len_a = len(a)
@@ -227,7 +225,7 @@ class wic_model():
                 train_a = self.train_attr[perm[batch:batch+self.batch_size]]
                 train_a_1h = self.trans_a(train_a)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e], self.training: True}
-                self.sess.run(self.crit_optimizer, feed_dict=train_feed)
+                #self.sess.run(self.crit_optimizer, feed_dict=train_feed)
                 self.sess.run(self.disc_optimizer, feed_dict=train_feed)
                 self.sess.run([self.ae_optimizer] + self.update_met_list, feed_dict=train_feed)
 
@@ -249,23 +247,32 @@ class wic_model():
             disp_x = self.test_image[:self.batch_size]
             disp_a = self.test_attr[:self.batch_size]
             disp_a_1h = self.trans_a(disp_a)
-
-            a_swap_li = self.swap_attr(disp_a)
-            swap_img_li = []
-            for a_s in a_swap_li:
-                a_s_1h = self.trans_a(disp_a)
-                swap_feed = {self.x: disp_x, self.a: a_s, self.a_1h: a_s_1h, self.lmda_e: [0], self.training: False}
-                swap_img = self.sess.run(self.x_dec, feed_dict=swap_feed)
-                swap_img_li.append((swap_img+1.)*127.5)
-            swapped = np.resize(np.transpose(swap_img_li, [1, 2, 0, 3, 4]), [256*16, 256*11, 3])
-            swapped_img = Image.fromarray(swapped.astype('uint8'))
-            swapped_img.save('./results/swapped/swap_e%05d.jpg'%epoch)
-
+            self.weather_run(disp_x, disp_a, 0)
             disp_feed = {self.x: disp_x, self.a: disp_a, self.a_1h: disp_a_1h, self.lmda_e: [0], self.training: False}
             disp_summary = self.sess.run(self.test_merged, feed_dict=disp_feed)
             self.test_writer.add_summary(disp_summary, epoch)
                 
             if epoch % 10 == 0: self.save_model(epoch)
+    
+    def weather_run(self, images, attrs, ind):
+        a_swap_li = self.swap_attr(attrs, ind)
+        swap_img_li = []
+        for a_s in tqdm(a_swap_li):
+            a_s_1h = self.trans_a(attrs)
+            swap_feed = {self.x: images, self.a: a_s, self.a_1h: a_s_1h, self.lmda_e: [0], self.training: False}
+            swap_img = self.sess.run(self.x_dec, feed_dict=swap_feed)
+            swap_img_li.append((swap_img+1.)*127.5)
+        swapped = np.resize(np.transpose(swap_img_li, [1, 2, 0, 3, 4]), [256*16, 256*11, 3])
+        swapped_img = Image.fromarray(swapped.astype('uint8'))
+        swapped_img.save('./results/swapped/swap_%s_%d.jpg'%(self.load_name, ind))
+
+    def swap_attr(self, attrs, ind):
+        new_attrs = np.array(attrs)
+        #attrs[:,ind] = 0.
+        #new_attrs[:,ind] = 1.
+        #attr_li = [(1.-i)*attrs + i*new_attrs for i in np.arange(0.0, 1.1, 0.1)]
+        attr_li = [(1.-i)*attrs + i*(1.-attrs) for i in np.arange(0.0, 1.1, 0.1)]
+        return attr_li
 
     def save_model(self, epoch):
         file_name = self.model_name+"_e%05d.model" % epoch
@@ -275,27 +282,25 @@ class wic_model():
     def load_model(self):
         self.saver = tf.train.Saver()
         self.saver.restore(self.sess, os.path.join(self.cp_dir, self.load_name))
-   
-    def load_data(self, data_dir='/mnt/data1/matsuzaki/weather/twitter/'):
-        filename = 'fusion03030205sky.csv'
-        df = pd.read_csv(data_dir+filename, engine='python')
-        df_ = df.loc[:,['temp', 'humidity', 'clouds', 'rain', 'snow']]
-        df_a_norm = self.normalize(df_)
-        df_['hour'] = pd.to_datetime(df['date'].astype(int), unit='s').dt.hour
-        df_marged = pd.concat([df['tweetID'].astype(str), df_['hour'], df_a_norm], axis=1, sort=False).fillna(0)
+
+    def load_data(self):
+        cols = ['id', 'loc.lat', 'loc.lng', 'weather.date.hour', 'weather.tempm', 'weather.hum', 'weather.wgustm']
+        df = load_json_file(cols)
+        df[cols[1:]] = self.normalize(df[cols[1:]])
         image_li = []
         attr_li = []
-        for ind, row in tqdm(df_marged.iterrows()):
+        for ind, row in tqdm(df.iterrows()):
             #load image
-            fn = row['tweetID']
+            fn = str(row['id'])
+            file_path = '/mnt/fs2/2018/matsuzaki/dataset_fromnitta/Image/*/' + fn + '.jpg'
+            files = glob.glob(file_path)
             try:
-                img = Image.open(data_dir + '0303_0205_sky/' + fn + '.jpg', 'r')
+                img = Image.open(files[0], 'r')
             except:
                 print('not found '+fn+'.jpg')
                 continue
             img = img.resize((256,256))
             #load sensor vals
-            row['hour'] = row['hour']/24.
             attr = row[1:].values
 
             image_li.append(np.asarray(img)/255.*2.-1.)
@@ -309,12 +314,6 @@ class wic_model():
         self.train_attr = np.asarray(train_attr)
         self.test_image = np.asarray(test_image)
         self.test_attr = np.asarray(test_attr)
-
-    def swap_attr(self, attrs):
-        new_attrs = np.array(attrs)
-        new_attrs[:,0] = 0.
-        attr_li = [(1.-i)*attrs + i*new_attrs for i in np.arange(0.0, 1.1, 0.1)]
-        return attr_li
 
     def normalize(self, df):
         df_ = df.copy()
