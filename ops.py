@@ -1,14 +1,45 @@
 import tensorflow as tf
 import numpy as np
 
-def batch_norm(input_, name='bn'):
+def batch_norm(x, name='bn'):
     with tf.variable_scope(name) as scope:
         eps = 1e-5
-        shape = input_.get_shape().dims[3].value
+        shape = x.get_shape().dims[3].value
         gamma = tf.get_variable('gamma', [shape], initializer=tf.constant_initializer(1.0))
         beta = tf.get_variable('beta', [shape], initializer=tf.constant_initializer(0.0))
-        mean, variance = tf.nn.moments(input_, axes=[0, 1, 2], keep_dims=False)
-        return tf.nn.batch_normalization(input_, mean, variance, beta, gamma, variance_epsilon=eps)
+        mean, variance = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=False)
+        return tf.nn.batch_normalization(x, mean, variance, beta, gamma, variance_epsilon=eps)
+
+def cond_batch_norm(x, c=None, hidden_size=64, name='cbn'):
+    with tf.variable_scope(name) as scope:
+        eps = 1e-5
+        batch, hei, wid, ch = x.shape.as_list()
+        gamma = tf.get_variable('gamma', [batch, ch], initializer=tf.constant_initializer(1.0))
+        beta = tf.get_variable('beta', [batch, ch], initializer=tf.constant_initializer(0.0))
+        if c is not None:
+            d_g = cbn_func(c, hidden_size, ch, name='f_gamma')
+            d_b = cbn_func(c, hidden_size, ch, name='f_beta')
+            gamma_ = gamma + d_g
+            beta_ = beta + d_b
+            gamma__ = tf.transpose(tf.stack([gamma_]*hei), [1, 0, 2])
+            gamma__ = tf.transpose(tf.stack([gamma__]*wid), [1, 2, 0, 3])
+            beta__ = tf.transpose(tf.stack([beta_]*hei), [1, 0, 2])
+            beta__ = tf.transpose(tf.stack([beta__]*wid), [1, 2, 0, 3])
+        else:
+            gamma__ = gamma
+            beta__ = beta
+        mean, variance = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=False)
+        sigma = tf.math.sqrt(variance + eps)
+        x_norm = (x - mean) / sigma
+        out = gamma__ * x_norm + beta__
+        return out
+
+def cbn_func(x, n_dim, f_num, name="cbn_func"):
+    with tf.variable_scope(name) as scope:
+        x = linear(x, n_dim, name='l1')
+        x = tf.nn.relu(x, name='relu')
+        x = linear(x, f_num, name='l2')
+    return x
 
 def lrelu(x, leak=0.2, name="lrelu"):
     with tf.variable_scope(name) as scope:
@@ -18,15 +49,17 @@ def swish(x, name="swish"):
     with tf.variable_scope(name) as scope:
         return x*tf.sigmoid(x)
 
-def linear(input_, output_size, name='linear_layer'):
+def linear(input_, output_size, sn=True, name='linear_layer'):
     with tf.variable_scope(name) as scope:
+        input_ = tf.layers.flatten(input_)
         shape = input_.shape[-1]
         stddev = np.sqrt(1./output_size)
         W = tf.get_variable('w', [shape, output_size], initializer=tf.truncated_normal_initializer(0.0, stddev))
+        if sn: W = spec_norm(W)
         b = tf.get_variable('b', [output_size], initializer=tf.constant_initializer(0.0))
         return tf.matmul(input_, W) + b
 
-def conv(x, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.2):
+def conv(x, out_dim, name='Conv', c=3, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.0):
     with tf.variable_scope(name) as scope:
         W = tf.get_variable('w', [c, c, x.get_shape().dims[-1].value, out_dim], initializer=tf.truncated_normal_initializer(stddev=stddev))
         b = tf.get_variable('b', [out_dim], initializer=tf.constant_initializer(0.0))
@@ -45,7 +78,7 @@ def conv(x, out_dim, name='Conv', c=4, k=2, stddev=0.02, padding='SAME', bn=True
                 y = tf.nn.relu(y, name='relu')
         return y
 
-def deconv(x, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.2):
+def deconv(x, out_dim, name='Deconv', c=4, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.0):
     with tf.variable_scope(name) as scope:
         x_shape = x.get_shape().as_list()
         out_shape = [x_shape[0], x_shape[1]*k, x_shape[2]*k, out_dim]
@@ -102,6 +135,12 @@ def hw_flatten(x):
 def l2_norm(v, eps=1e-12):
     return v / (tf.reduce_sum(v**2)**0.5+eps)
 
+def embedding(y, in_size, out_size):
+    V = tf.get_variable('v', [in_size, out_size], initializer=tf.truncated_normal_initializer(stddev=1.0))
+    V = spec_norm(V)
+    o = tf.matmul(y, V)
+    return o
+    
 def spec_norm(w):
     w_shape = w.shape.as_list()
     w = tf.reshape(w, [-1, w_shape[-1]])

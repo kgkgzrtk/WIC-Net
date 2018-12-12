@@ -2,7 +2,7 @@
 Weather image creation.
 
 Usage:
-    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR] [--load_name=FILE_NAME] [--max_lmda=LAMBDA] [--reg_scale=REG_S]
+    main.py [--model_name=MODEL_N] [--epoch=EPOCH] [--lr=LR] [--dataset_dir=DATASET_DIR] [--batch_size=BATCH_SIZE] [--dim=DIM] [--tensorboard_dir=TB_DIR] [--checkpoint_dir=CP_DIR] [--load_name=FILE_NAME] [--max_lmda=LAMBDA] [--reg_scale=REG_S] [--gpu=GPU_ID]
     main.py -h | --help
 
 Option:
@@ -16,8 +16,9 @@ Option:
     --checkpoint_dir = CP_DIR  : The path of checkpoint directory. [default: ./results/checkpoint]
     --batch_size=BATCH_SIZE     : The number of batch size. [default: 16]
     --dim=DIM       : The channel dimention of model. [default: 32]
-    --max_lmda=LAMBDA   :the learning param. [default: 1e-4]
-    --reg_scale=REG_S   :the learning param. [default: 1e-5]
+    --max_lmda=LAMBDA   :the learning param. [default: 1e-2]
+    --reg_scale=REG_S   :the learning param. [default: 0]
+    --gpu=GPU_ID   : The ID of GPU for using [default: 1]
 
 """
 import tensorflow as tf
@@ -28,7 +29,7 @@ def main():
     args = docopt(__doc__)
     print(args)
     config = tf.ConfigProto()
-    config.gpu_options.visible_device_list=""
+    config.gpu_options.visible_device_list=args['--gpu']
     #config.gpu_options.allow_growth=True
     with tf.Session(config=config) as sess:
         model = wic_model(sess, args)
@@ -38,7 +39,7 @@ def main():
         else:
             model.load_model()
             model.load_data()
-            model.weather_run(model.test_image[:model.batch_size], model.test_attr[:model.batch_size], 3)
+            model.weather_run(model.test_image[:model.batch_size], model.test_attr[:model.batch_size], 2, save=True)
         sess.close()
 
 if __name__ == "__main__":

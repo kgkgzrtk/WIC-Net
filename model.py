@@ -35,46 +35,45 @@ class wic_model():
 
         self.eps = 1e-8
         self.a_num = 6
+        self.z_dim = 1024
         self.img_h, self.img_w, self.img_ch = (256, 256, 3)
+        self.layer_num = int(np.log2(self.img_h)) - 2
 
     def build(self):
 
         self.x = tf.placeholder(tf.float32, [self.batch_size, 256, 256, 3])
         self.a = tf.placeholder(tf.float32, [self.batch_size, self.a_num])
         self.a_1h = tf.placeholder(tf.float32, [self.batch_size, self.a_num * 2])
-        self.lmda_e = tf.placeholder(tf.float32, [1])
+        self.z = tf.placeholder(tf.float32, [self.batch_size, self.z_dim])
         self.training = tf.placeholder(tf.bool)
 
         self.x_ = tf.cond(self.training, lambda: self.data_augment(self.x), lambda: self.x)
 
-        self.y_enc = self.encoder(self.x_)
-        self.x_dec = self.decoder(self.y_enc, self.a_1h)
-        self.o_disc = self.discriminator(self.y_enc)
+        gen_o = self.generator(self.z, self.a_1h)
+        self.x_dec = gen_o
+        dis_o_real = self.discriminator(self.x_, self.a_1h)
+        dis_o_fake = self.discriminator(gen_o, self.a_1h, reuse=True)
         
         #losses
-        self.gen_loss = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(self.x_, self.x_dec), axis=[1, 2, 3]))
-        self.enc_loss = tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - self.a) + self.eps ), axis=1))
-        self.disc_loss = - tf.reduce_mean(tf.reduce_sum(tf.log( tf.abs(self.o_disc - (1.- self.a)) + self.eps ), axis=1))
-        self.ae_loss = self.gen_loss - self.lmda_e * self.enc_loss
+        disc_loss = tf.reduce_mean(tf.reduce_sum(tf.math.softplus(-dis_o_real), axis=1)) \
+                    + tf.reduce_mean(tf.reduce_sum(tf.math.softplus(dis_o_fake), axis=1))
+
+        gen_loss = tf.reduce_mean(tf.reduce_sum(tf.math.softplus(-dis_o_fake), axis=1))
 
         optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
         train_vars = tf.trainable_variables()
-        ae_vars = [v for v in train_vars if 'ae' in v.name]
+        gen_vars = [v for v in train_vars if 'gen' in v.name]
         disc_vars = [v for v in train_vars if 'disc' in v.name]
 
-        self.L1_weight_penalty = tf.add_n([tf.reduce_sum(tf.abs(w)) for w in ae_vars if 'w' in w.name])
-        self.weight_penalty = self.reg_scale * self.L1_weight_penalty
+        self.gen_optimizer = optimizer.minimize(gen_loss, var_list=gen_vars)
+        self.disc_optimizer = optimizer.minimize(disc_loss, var_list=disc_vars)
 
-        self.ae_optimizer = optimizer.minimize(self.ae_loss + self.weight_penalty, var_list=ae_vars)
-        self.disc_optimizer = optimizer.minimize(self.disc_loss, var_list=disc_vars)
-
-        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - self.x_dec),[1, 2, 3])/(self.img_h * self.img_w)))
+        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - gen_o),[1, 2, 3])/(self.img_h * self.img_w)))
         
         summary_dict = {
-            'loss/gen': self.gen_loss,
-            'loss/disc': self.disc_loss,
-            'loss/ae':  self.ae_loss,
-            'loss/rms': RMS_loss, 
+            'loss/gen': gen_loss,
+            'loss/disc': disc_loss,
+            'eval/rms': RMS_loss, 
         }
 
         self.update_met_list = []
@@ -86,7 +85,7 @@ class wic_model():
         self.x_img = tf.summary.image('x_image', tf.cast((self.x_+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
         a_1h_img = tf.reshape(tf.transpose(tf.stack([self.a_1h]*4),[1, 0, 2]), [self.batch_size, 2, 2*2*self.a_num, 1])
         self.a_1h_img = tf.summary.image('a_1h_img', tf.cast(a_1h_img*255., tf.uint8), self.batch_size, collections=['train', 'test'])
-        self.sum_img = tf.summary.image('output_image', tf.cast((self.x_dec+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        self.sum_img = tf.summary.image('output_image', tf.cast((gen_o+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
 
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if (('w' in v.name) or ('bn' in v.name))]
 
@@ -102,77 +101,68 @@ class wic_model():
             c2 = conv(c1, o_dim, c=3, k=2, name='conv2', func_factor=0)
         return c_s + c2
 
-    def res_block_up(self, x, a, o_dim, name='res_block_up'):
+    def res_block_up(self, x, a, o_dim, first_layer=False, final_layer=False, name='res_block_up'):
         with tf.variable_scope(name) as scope:
-            c_s = conv(x, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
-            c_s = upsampling(c_s, o_dim, name='up')
-            c1 = conv(x, o_dim, c=3, k=1, name='conv1', func_factor=0)
-            c2 = conv(c1, o_dim, c=3, k=2, name='conv2', func_factor=0)
-        return c_s + c2
-
-
-
-    def encoder(self, x, name='ae_enc'):
-        with tf.variable_scope(name) as scope:
-            c1 = conv(x, self.dim, name='c1')
-            c2 = conv(c1, self.dim * 2, name='c2')
-            c3 = conv(c2, self.dim * 4, name='c3')
-            c3 = self.attention(c3, self.dim * 4)
-
-            c4 = conv(c3, self.dim * 8, name='c4')
-            c5 = conv(c4, self.dim * 16, name='c5')
-            c6 = conv(c5, self.dim * 32, name='c6')
-            c7 = conv(c6, self.dim * 32, name='c7')
-            return c7
-
-    def decoder(self, y, a, name='ae_dec'):
-        with tf.variable_scope(name) as scope:
-            a1 = tf.transpose(tf.stack([a]*4),[1, 0, 2])
-            d0 = tf.concat([y, tf.reshape(a1, [-1, 2, 2, 2*self.a_num])], 3)
-            d1 = deconv(d0, self.dim * 32, name='d1')
-            d1 = tf.nn.dropout(d1, keep_prob=0.7)
+            if final_layer: o_dim = 3
+            c_s = upsampling(x, x.shape[-1], name='up_s')
+            c_s = conv(c_s, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
             
-            a2 = tf.concat([a1]*4, axis=1)
-            d1 = tf.concat([d1, tf.reshape(a2, [-1, 4, 4, 2*self.a_num])], 3)
-            d2 = deconv(d1, self.dim * 16, name='d2')
-            d2 = tf.nn.dropout(d2, keep_prob=0.7)
+            x = cond_batch_norm(x, a, name='cbn1')
             
-            a3 = tf.concat([a2]*4, axis=1)
-            d2 = tf.concat([d2, tf.reshape(a3, [-1, 8, 8, 2*self.a_num])], 3)
-            d3 = deconv(d2, self.dim * 8, name='d3')
+            x = conv(x, o_dim, c=3, k=1, bn=False, name='conv1')
+            
+            x = cond_batch_norm(x, a, name='cbn2')
+            x = upsampling(x, o_dim, name='up')
 
-            d3 = self.attention(d3, self.dim*8)
-            
-            a4 = tf.concat([a3]*4, axis=1)
-            d3 = tf.concat([d3, tf.reshape(a4, [-1, 16, 16, 2*self.a_num])], 3)
-            d4 = deconv(d3, self.dim * 4, name='d4')
-            
-            a5 = tf.concat([a4]*4, axis=1)
-            d4 = tf.concat([d4, tf.reshape(a5, [-1, 32, 32, 2*self.a_num])], 3)
-            d5 = deconv(d4, self.dim * 2, name='d5')
-            
-            a6 = tf.concat([a5]*4, axis=1)
-            d5 = tf.concat([d5, tf.reshape(a6, [-1, 64, 64, 2*self.a_num])], 3)
-            d6 = deconv(d5, self.dim * 1, name='d6')
-            
-            a7 = tf.concat([a6]*4, axis=1)
-            d6 = tf.concat([d6, tf.reshape(a7, [-1, 128, 128, 2*self.a_num])], 3)
-            d7 = deconv(d6, 3, name='d7', func=False, bn=False)
-            
-            return tf.nn.tanh(d7)
+            x = conv(x, o_dim, c=3, k=1, name='conv2', func=final_layer, bn=False)
+        return c_s + x
 
-    def discriminator(self, y, name='disc'):
-        with tf.variable_scope(name) as scope:
-            h1 = conv(y, self.dim * 32, name='h1')
-            h1 = tf.nn.dropout(h1, keep_prob=0.7)
-            h_flat = tf.reshape(h1, [self.batch_size, self.dim * 32])
-            h2 = linear(h_flat, self.dim * 32, name='fc1')
-            h3 = linear(h2, self.a_num, name='fc2')
-            return tf.nn.sigmoid(h3)
+    def discriminator(self, x, a, name='disc', reuse=False):
+        with tf.variable_scope(name, reuse=reuse) as scope:
+            print("Discriminator:")
+            half = self.layer_num // 2
+            for i in range(half):
+                x = self.res_block_down(x, self.dim * (2**i), name='b_dw1_'+str(i))
+                print(x.shape)
+            #self.attention(x, x.shape[-1], reuse=reuse)
+            #print("self-attention x->x")
+            for i in range(half, self.layer_num):
+                x = self.res_block_down(x, self.dim * (2**i), name='b_dw2_'+str(i))
+                print(x.shape)
+            x = tf.nn.relu(x)
+            x = tf.reduce_sum(x, axis=[1, 2])
+            emb_a = embedding(a, self.a_num*2, x.shape[-1])
+            emb = tf.reduce_sum(emb_a * x, axis=1, keepdims=True)
+            o = emb + linear(x, 1)
+        return x
 
+    def generator(self, z, a, name='gen', reuse=False):
+        with tf.variable_scope(name, reuse=reuse) as scope:
+            print("Generator:")
+            half = self.layer_num // 2
+            ch = self.z_dim
+            init_hw = 4
+            z = linear(z, (init_hw**2)*ch, name="l_z")
+            z = tf.reshape(z, [-1, init_hw, init_hw, ch])
+            for i in range(half):
+                z = self.res_block_up(z, a, ch//2,
+                                    name='b_up1_'+str(i)
+                                )
+                ch = ch//2
+                print(z.shape)
+            #z = self.attention(z, z.shape[-1], reuse=reuse)
+            #print("self-attention x->x")
+            for i in range(half,self.layer_num):
+                z = self.res_block_up(z, a, ch//2,
+                                    final_layer=(i==self.layer_num-1),
+                                    name='b_up2_'+str(i)
+                                )
+                ch = ch//2
+                print(z.shape)
+            return tf.nn.tanh(z)
 
     def attention(self, x, ch, sn=True, name='attention', reuse=False):
-        with tf.variable_scope(name) as scope: 
+        with tf.variable_scope(name, reuse=reuse) as scope: 
             f = conv(x, ch // 8, c=1, k=1, bn=False, sn=sn, name='f_conv')
             g = conv(x, ch // 8, c=1, k=1, bn=False, sn=sn, name='g_conv')
             h = conv(x, ch, c=1, k=1, bn=False, sn=sn, name='h_conv')
@@ -224,15 +214,17 @@ class wic_model():
                 train_x = self.train_image[perm[batch:batch+self.batch_size]]
                 train_a = self.train_attr[perm[batch:batch+self.batch_size]]
                 train_a_1h = self.trans_a(train_a)
-                train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [lmda_e], self.training: True}
+                train_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.z: train_z, self.training: True}
                 #self.sess.run(self.crit_optimizer, feed_dict=train_feed)
                 self.sess.run(self.disc_optimizer, feed_dict=train_feed)
-                self.sess.run([self.ae_optimizer] + self.update_met_list, feed_dict=train_feed)
+                self.sess.run([self.gen_optimizer] + self.update_met_list, feed_dict=train_feed)
 
             train_x = self.train_image[:self.batch_size]
             train_a = self.train_attr[:self.batch_size]
             train_a_1h = self.trans_a(train_a)
-            train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.lmda_e: [0], self.training: False}
+            train_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+            train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h,  self.z: train_z, self.training: False}
             train_summary = self.sess.run(self.train_merged, feed_dict = train_feed)
             self.train_writer.add_summary(train_summary, epoch)
             
@@ -241,20 +233,21 @@ class wic_model():
                 test_x = self.test_image[batch:batch+self.batch_size]
                 test_a = self.test_attr[batch:batch+self.batch_size]
                 test_a_1h = self.trans_a(test_a)
-                test_feed = {self.x: test_x, self.a: test_a, self.a_1h: test_a_1h, self.lmda_e: [0], self.training: False}
+                test_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                test_feed = {self.x: test_x, self.a: test_a, self.a_1h: test_a_1h, self.z: test_z, self.training: False}
                 self.sess.run(self.update_met_list, feed_dict=test_feed)
             
             disp_x = self.test_image[:self.batch_size]
             disp_a = self.test_attr[:self.batch_size]
             disp_a_1h = self.trans_a(disp_a)
-            self.weather_run(disp_x, disp_a, 0)
-            disp_feed = {self.x: disp_x, self.a: disp_a, self.a_1h: disp_a_1h, self.lmda_e: [0], self.training: False}
+            disp_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+            disp_feed = {self.x: disp_x, self.a: disp_a, self.a_1h: disp_a_1h, self.z: disp_z, self.training: False}
             disp_summary = self.sess.run(self.test_merged, feed_dict=disp_feed)
             self.test_writer.add_summary(disp_summary, epoch)
                 
             if epoch % 10 == 0: self.save_model(epoch)
     
-    def weather_run(self, images, attrs, ind):
+    def weather_run(self, images, attrs, ind, save=False):
         a_swap_li = self.swap_attr(attrs, ind)
         swap_img_li = []
         for a_s in tqdm(a_swap_li):
@@ -263,15 +256,16 @@ class wic_model():
             swap_img = self.sess.run(self.x_dec, feed_dict=swap_feed)
             swap_img_li.append((swap_img+1.)*127.5)
         swapped = np.resize(np.transpose(swap_img_li, [1, 2, 0, 3, 4]), [256*16, 256*11, 3])
-        swapped_img = Image.fromarray(swapped.astype('uint8'))
-        swapped_img.save('./results/swapped/swap_%s_%d.jpg'%(self.load_name, ind))
+        if save:
+            swapped_img = Image.fromarray(swapped.astype('uint8'))
+            swapped_img.save('./results/swapped/swap_%s_%d.jpg'%(self.load_name, ind))
+        return swapped
 
     def swap_attr(self, attrs, ind):
         new_attrs = np.array(attrs)
-        #attrs[:,ind] = 0.
-        #new_attrs[:,ind] = 1.
-        #attr_li = [(1.-i)*attrs + i*new_attrs for i in np.arange(0.0, 1.1, 0.1)]
-        attr_li = [(1.-i)*attrs + i*(1.-attrs) for i in np.arange(0.0, 1.1, 0.1)]
+        attrs[:,ind] = 0.
+        new_attrs[:,ind] = 1.
+        attr_li = [(1.-i)*attrs + i*new_attrs for i in np.arange(0.0, 1.1, 0.1)]
         return attr_li
 
     def save_model(self, epoch):
