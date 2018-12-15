@@ -10,7 +10,7 @@ Option:
     --model_name=MODEL_N   : The name of model. [default: wic-net]
     --load_name=FILE_NAME :The name of file for restore learned model.
     --epoch=EPOCH: The number of iteration to train on. [default: 64]
-    --lr=LR         : Learning rate. [default: 2e-4]
+    --lr=LR         : Learning rate. [default: 1e-4]
     --dataset_dir=DATASET_DIR   : The path of the dataset directory. [default: ./data]
     --tensorboard_dir = TB_DIR  : The path of TensorBoard directory. [default: ./results/tensorboard]
     --checkpoint_dir = CP_DIR  : The path of checkpoint directory. [default: ./results/checkpoint]
@@ -33,6 +33,7 @@ def main():
     #config.gpu_options.allow_growth=True
     with tf.Session(config=config) as sess:
         model = wic_model(sess, args)
+        model.load_data()
         model.build()
         if model.load_name is None:
             model.train()

@@ -35,7 +35,6 @@ class wic_model():
 
         self.data_num = 20000
         self.eps = 1e-8
-        self.a_num = 6
         self.z_dim = 1024
         self.img_h, self.img_w, self.img_ch = (128, 128, 3)
         self.layer_num = int(np.log2(self.img_h)) - 2
@@ -76,21 +75,23 @@ class wic_model():
 
         #Optimizers
 
-        optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
+        small_optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
+        big_optimizer = tf.train.AdamOptimizer(self.lr*2, beta1=0., beta2=0.9)
 
         train_vars = tf.trainable_variables()
         enc_vars = [v for v in train_vars if 'enc' in v.name]
         gen_vars = [v for v in train_vars if 'gen' in v.name]
         disc_vars = [v for v in train_vars if 'disc' in v.name]
 
-        self.enc_optimizer = optimizer.minimize(rec_loss, var_list=enc_vars)
-        self.gen_optimizer = optimizer.minimize(gen_loss, var_list=gen_vars)
-        self.disc_optimizer = optimizer.minimize(disc_loss, var_list=disc_vars)
+        self.enc_optimizer = small_optimizer.minimize(rec_loss, var_list=enc_vars)
+        self.gen_optimizer = small_optimizer.minimize(gen_loss, var_list=gen_vars)
+        self.disc_optimizer = big_optimizer.minimize(disc_loss, var_list=disc_vars)
 
         
         summary_dict = {
             'loss/gen': gen_loss,
             'loss/disc': disc_loss,
+            'loss/rec': rec_loss,
             'eval/rms': RMS_loss
         }
 
@@ -237,7 +238,6 @@ class wic_model():
         return o
 
     def train(self):
-        self.load_data()
         tf.global_variables_initializer().run()
         self.saver = tf.train.Saver()
         per_epoch = len(self.train_image) // self.batch_size
@@ -322,25 +322,32 @@ class wic_model():
         self.saver.restore(self.sess, os.path.join(self.cp_dir, self.load_name))
 
     def load_data(self):
-        df = load_json_file(self.data_num)
-        df = self.normalize(df)
+        print("load dataset ---")
+        df = load_json_file(self.data_num, load_csv=True, save_csv=False)
+        #df = self.normalize(df)
         image_li = []
         attr_li = []
         for ind, row in tqdm(df.iterrows(), total=self.data_num):
             #load image
             fn = str(row['id'])
-            file_path = '/mnt/fs2/2018/matsuzaki/dataset_fromnitta/Image/*/' + fn + '.jpg'
-            files = glob.glob(file_path)
+            file_pathes = '/mnt/fs2/2018/matsuzaki/dataset_fromnitta/Image/*/' + fn + '.jpg'
             try:
-                img = Image.open(files[0], 'r')
+                file_path = glob.glob(file_pathes)[0]
+                img = Image.open(file_path, 'r')
             except:
                 print('not found '+fn+'.jpg')
                 continue
             img = img.resize((self.img_h, self.img_w))
-            #load sensor vals
-            attr = row[1:].values
             image_li.append(np.asarray(img)/255.*2.-1.)
-            attr_li.append(attr)
+            key = os.path.basename(os.path.dirname(file_path))
+            df.loc[ind, 'condition'] = key
+            #load sensor vals
+            #attr = row[1:].values
+            #attr_li.append(attr)
+        df_attr = pd.get_dummies(df['condition'])
+        self.a_num = len(df_attr.columns)
+        print(df_attr.columns)
+        attr_li = df_attr.values.tolist()
         data_li = list(zip(image_li, attr_li))
         train_li = [v for i, v in enumerate(data_li) if i%10!=0]
         test_li = [v for i, v in enumerate(data_li) if i%10==0]
