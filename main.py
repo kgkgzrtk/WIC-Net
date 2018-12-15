@@ -9,14 +9,14 @@ Option:
     -h, --help      : Show this screen.
     --model_name=MODEL_N   : The name of model. [default: wic-net]
     --load_name=FILE_NAME :The name of file for restore learned model.
-    --epoch=EPOCH   : The number of epoch to train on. [default: 64]
+    --epoch=EPOCH: The number of iteration to train on. [default: 64]
     --lr=LR         : Learning rate. [default: 2e-4]
     --dataset_dir=DATASET_DIR   : The path of the dataset directory. [default: ./data]
     --tensorboard_dir = TB_DIR  : The path of TensorBoard directory. [default: ./results/tensorboard]
     --checkpoint_dir = CP_DIR  : The path of checkpoint directory. [default: ./results/checkpoint]
     --batch_size=BATCH_SIZE     : The number of batch size. [default: 16]
     --dim=DIM       : The channel dimention of model. [default: 32]
-    --max_lmda=LAMBDA   :the learning param. [default: 1e-2]
+    --max_lmda=LAMBDA   :the learning param. [default: 1.]
     --reg_scale=REG_S   :the learning param. [default: 0]
     --gpu=GPU_ID   : The ID of GPU for using [default: 1]
 

@@ -4,7 +4,7 @@ import numpy as np
 def batch_norm(x, name='bn'):
     with tf.variable_scope(name) as scope:
         eps = 1e-5
-        shape = x.get_shape().dims[3].value
+        shape = x.get_shape().dims[-1].value
         gamma = tf.get_variable('gamma', [shape], initializer=tf.constant_initializer(1.0))
         beta = tf.get_variable('beta', [shape], initializer=tf.constant_initializer(0.0))
         mean, variance = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=False)
@@ -59,7 +59,7 @@ def linear(input_, output_size, sn=True, name='linear_layer'):
         b = tf.get_variable('b', [output_size], initializer=tf.constant_initializer(0.0))
         return tf.matmul(input_, W) + b
 
-def conv(x, out_dim, name='Conv', c=3, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=True, func_factor=0.0):
+def conv(x, out_dim, name='Conv', c=3, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=False, func_factor=0.0):
     with tf.variable_scope(name) as scope:
         W = tf.get_variable('w', [c, c, x.get_shape().dims[-1].value, out_dim], initializer=tf.truncated_normal_initializer(stddev=stddev))
         b = tf.get_variable('b', [out_dim], initializer=tf.constant_initializer(0.0))
@@ -131,6 +131,11 @@ def pixel_shuffler(x, out_shape, r=2, c=4, name='ps', bn=True):
 
 def hw_flatten(x):
     return tf.reshape(x, shape=[x.shape[0], -1, x.shape[-1]])
+
+def batch_dot(a, b):
+    a = tf.expand_dims(a, 1)
+    b = tf.expand_dims(b, 2)
+    return tf.matmul(a,b)
 
 def l2_norm(v, eps=1e-12):
     return v / (tf.reduce_sum(v**2)**0.5+eps)
