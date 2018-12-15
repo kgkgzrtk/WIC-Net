@@ -9,7 +9,7 @@ Option:
     -h, --help      : Show this screen.
     --model_name=MODEL_N   : The name of model. [default: wic-net]
     --load_name=FILE_NAME :The name of file for restore learned model.
-    --epoch=EPOCH: The number of iteration to train on. [default: 64]
+    --epoch=EPOCH: The number of iteration to train on. [default: 128]
     --lr=LR         : Learning rate. [default: 1e-4]
     --dataset_dir=DATASET_DIR   : The path of the dataset directory. [default: ./data]
     --tensorboard_dir = TB_DIR  : The path of TensorBoard directory. [default: ./results/tensorboard]

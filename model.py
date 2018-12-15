@@ -35,7 +35,7 @@ class wic_model():
 
         self.data_num = 20000
         self.eps = 1e-8
-        self.z_dim = 1024
+        self.z_dim = 4096
         self.img_h, self.img_w, self.img_ch = (128, 128, 3)
         self.layer_num = int(np.log2(self.img_h)) - 2
 
@@ -71,21 +71,20 @@ class wic_model():
 
         gen_loss = tf.reduce_mean(tf.reduce_sum(tf.math.softplus(-dis_o_fake), axis=1))
 
-        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - gen_o),[1, 2, 3])/(self.img_h * self.img_w)))
+        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - gen_o_from_enc),[1, 2, 3])/(self.img_h * self.img_w)))
 
         #Optimizers
 
-        small_optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
-        big_optimizer = tf.train.AdamOptimizer(self.lr*2, beta1=0., beta2=0.9)
+        optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
 
         train_vars = tf.trainable_variables()
         enc_vars = [v for v in train_vars if 'enc' in v.name]
         gen_vars = [v for v in train_vars if 'gen' in v.name]
         disc_vars = [v for v in train_vars if 'disc' in v.name]
 
-        self.enc_optimizer = small_optimizer.minimize(rec_loss, var_list=enc_vars)
-        self.gen_optimizer = small_optimizer.minimize(gen_loss, var_list=gen_vars)
-        self.disc_optimizer = big_optimizer.minimize(disc_loss, var_list=disc_vars)
+        self.enc_optimizer = optimizer.minimize(rec_loss, var_list=enc_vars)
+        self.gen_optimizer = optimizer.minimize(gen_loss, var_list=gen_vars)
+        self.disc_optimizer = optimizer.minimize(disc_loss, var_list=disc_vars)
 
         
         summary_dict = {
@@ -104,7 +103,8 @@ class wic_model():
         self.x_img = tf.summary.image('x_image', tf.cast((self.x_+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
         a_1h_img = tf.reshape(tf.transpose(tf.stack([self.a_1h]*4),[1, 0, 2]), [self.batch_size, 2, 2*2*self.a_num, 1])
         self.a_1h_img = tf.summary.image('a_1h_img', tf.cast(a_1h_img*255., tf.uint8), self.batch_size, collections=['train', 'test'])
-        self.sum_img = tf.summary.image('output_image', tf.cast((gen_o+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        self.sum_img = tf.summary.image('from_noise', tf.cast((gen_o+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        self.sum_img_ = tf.summary.image('output_image', tf.cast((gen_o_from_enc+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
 
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if ('w' in v.name)]
 
@@ -258,7 +258,8 @@ class wic_model():
                 train_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.z: train_z, self.training: True}
                 self.sess.run(self.disc_optimizer, feed_dict=train_feed)
-                self.sess.run([self.gen_optimizer] + self.update_met_list, feed_dict=train_feed)
+                self.sess.run(self.gen_optimizer, feed_dict=train_feed)
+                self.sess.run([self.enc_optimizer] + self.update_met_list, feed_dict=train_feed)
 
             train_x = self.train_image[:self.batch_size]
             train_a = self.train_attr[:self.batch_size]
@@ -278,7 +279,7 @@ class wic_model():
                 self.sess.run(self.update_met_list, feed_dict=test_feed)
             
             disp_x = self.test_image[:self.batch_size]
-            disp_a = self.test_attr[:self.batch_size]
+            disp_a = np.eye(self.batch_size, self.a_num, dtype=np.float32)
             disp_a_1h = self.trans_a(disp_a)
             disp_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
             disp_feed = {self.x: disp_x, self.a: disp_a, self.a_1h: disp_a_1h, self.z: disp_z, self.training: False}
