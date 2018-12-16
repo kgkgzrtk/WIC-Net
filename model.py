@@ -34,8 +34,9 @@ class wic_model():
         self.test_writer = tf.summary.FileWriter(self.tensorboard_dir + '/test', sess.graph)
 
         self.data_num = 20000
+        self.a_num = 6
         self.eps = 1e-8
-        self.z_dim = 4096
+        self.z_dim = 1024
         self.img_h, self.img_w, self.img_ch = (128, 128, 3)
         self.layer_num = int(np.log2(self.img_h)) - 2
 
@@ -62,10 +63,9 @@ class wic_model():
         
         #losses
         norm_size =  tf.sqrt(tf.reduce_sum(dis_h_real**2, axis=1)*tf.reduce_sum(dis_h_fake**2, axis=1) + self.eps)
-        rec_loss = tf.reduce_sum(
-                1. - tf.reshape(batch_dot(dis_h_real,dis_h_fake), [dis_h_real.shape[0],-1])/norm_size
+        rec_loss = tf.reduce_mean(
+                1. - tf.reduce_sum(dis_h_real*dis_h_fake, axis=1)/norm_size
         )
-
         disc_loss = tf.reduce_mean(tf.reduce_sum(tf.math.softplus(-dis_o_real), axis=1)) \
                     + tf.reduce_mean(tf.reduce_sum(tf.math.softplus(dis_o_fake), axis=1))
 
@@ -78,9 +78,9 @@ class wic_model():
         optimizer = tf.train.AdamOptimizer(self.lr, beta1=0., beta2=0.9)
 
         train_vars = tf.trainable_variables()
-        enc_vars = [v for v in train_vars if 'enc' in v.name]
-        gen_vars = [v for v in train_vars if 'gen' in v.name]
-        disc_vars = [v for v in train_vars if 'disc' in v.name]
+        enc_vars = [v for v in train_vars if 'enc_' in v.name]
+        gen_vars = [v for v in train_vars if 'gen_' in v.name]
+        disc_vars = [v for v in train_vars if 'dis_' in v.name]
 
         self.enc_optimizer = optimizer.minimize(rec_loss, var_list=enc_vars)
         self.gen_optimizer = optimizer.minimize(gen_loss, var_list=gen_vars)
@@ -138,7 +138,7 @@ class wic_model():
         with tf.variable_scope(name) as scope:
             if final_layer: o_dim = 3
             c_s = upsampling(x, x.shape[-1], name='up_s')
-            c_s = conv(c_s, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
+            c_s = conv(c_s, o_dim, c=1, k=1, name='skip_conv', padding='same', func=False, bn=False)
             
             x = tf.nn.relu(cond_batch_norm(x, a, name='cbn1'))
             x = conv(x, o_dim, c=3, k=1, bn=False, name='conv1')
@@ -147,13 +147,13 @@ class wic_model():
             x = conv(x, o_dim, c=3, k=1, name='conv2', func=final_layer, bn=False)
         return c_s + x
 
-    def encoder(self, x, a, name='enc', reuse=False):
+    def encoder(self, x, a, name='encoder', reuse=False):
         with tf.variable_scope(name, reuse=reuse) as scope:
             print("Encoder:")
             half = self.layer_num // 2
             for i in range(half):
                 x = self.res_block_enc(x, a, self.dim*(2**i),
-                                    name='b_en1_'+str(i)
+                                    name='enc_b_dw1_'+str(i)
                                 )
                 print(x.shape)
             #z = self.attention(z, z.shape[-1], reuse=reuse)
@@ -161,46 +161,46 @@ class wic_model():
             for i in range(half,self.layer_num):
                 x = self.res_block_enc(x, a, self.dim * (2**i),
                                     final_layer=(i==self.layer_num-1),
-                                    name='b_en2_'+str(i)
+                                    name='enc_b_dw2_'+str(i)
                                 )
                 print(x.shape)
-            x = batch_norm(x)
+            x = batch_norm(x, name='enc_bn')
             x = tf.reshape(x, [self.batch_size, -1])
-            x = linear(x, self.z_dim, name='e_l_z')
+            x = linear(x, self.z_dim, name='enc_l_z')
             x = lrelu(x)
             print(x.shape)
             return x
 
-    def discriminator(self, x, a, name='disc', reuse=False):
+    def discriminator(self, x, a, name='discriminator', reuse=False):
         with tf.variable_scope(name, reuse=reuse) as scope:
             if not reuse: print("Discriminator:")
             half = self.layer_num // 2
             for i in range(half):
-                x = self.res_block_down(x, self.dim * (2**i), name='b_dw1_'+str(i))
+                x = self.res_block_down(x, self.dim * (2**i), name='dis_b_dw1_'+str(i))
                 if not reuse: print(x.shape)
             #self.attention(x, x.shape[-1], reuse=reuse)
             #print("self-attention x->x")
             for i in range(half, self.layer_num):
-                x = self.res_block_down(x, self.dim * (2**i), name='b_dw2_'+str(i))
+                x = self.res_block_down(x, self.dim * (2**i), name='dis_b_dw2_'+str(i))
                 if not reuse: print(x.shape)
             x_feat = lrelu(x)
             x = tf.reduce_sum(x_feat, axis=[1, 2])
-            emb_a = embedding(a, self.a_num*2, x.shape[-1])
+            emb_a = embedding(a, self.a_num*2, x.shape[-1], name='dis_emb')
             emb = tf.reduce_sum(emb_a * x, axis=1, keepdims=True)
-            o = emb + linear(x, 1)
+            o = emb + linear(x, 1, name='dis_l_o')
         return o, tf.reshape(x_feat, [self.batch_size, -1])
 
-    def generator(self, z, a, name='gen', reuse=False):
+    def generator(self, z, a, name='generator', reuse=False):
         with tf.variable_scope(name, reuse=reuse) as scope:
             if not reuse: print("Generator:")
             half = self.layer_num // 2
             ch = self.z_dim
             init_hw = 4
-            z = linear(z, (init_hw**2)*ch, name="l_z")
+            z = linear(z, (init_hw**2)*ch, name="gen_l_z")
             z = tf.reshape(z, [-1, init_hw, init_hw, ch])
             for i in range(half):
                 z = self.res_block_up(z, a, ch//2,
-                                    name='b_up1_'+str(i)
+                                    name='gen_b_up1_'+str(i)
                                 )
                 ch = ch//2
                 if not reuse: print(z.shape)
@@ -209,7 +209,7 @@ class wic_model():
             for i in range(half,self.layer_num):
                 z = self.res_block_up(z, a, ch//2,
                                     final_layer=(i==self.layer_num-1),
-                                    name='b_up2_'+str(i)
+                                    name='gen_b_up2_'+str(i)
                                 )
                 ch = ch//2
                 if not reuse: print(z.shape)

@@ -10,15 +10,16 @@ def batch_norm(x, name='bn'):
         mean, variance = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=False)
         return tf.nn.batch_normalization(x, mean, variance, beta, gamma, variance_epsilon=eps)
 
-def cond_batch_norm(x, c=None, hidden_size=64, name='cbn'):
+def cond_batch_norm(x, c=None, name='cbn'):
     with tf.variable_scope(name) as scope:
         eps = 1e-5
         batch, hei, wid, ch = x.shape.as_list()
+        _, a_num = c.shape.as_list()
         gamma = tf.get_variable('gamma', [batch, ch], initializer=tf.constant_initializer(1.0))
         beta = tf.get_variable('beta', [batch, ch], initializer=tf.constant_initializer(0.0))
         if c is not None:
-            d_g = cbn_func(c, hidden_size, ch, name='f_gamma')
-            d_b = cbn_func(c, hidden_size, ch, name='f_beta')
+            d_g = embedding(c, a_num, ch, name='f_g')
+            d_b = embedding(c, a_num, ch, name='f_b')
             gamma_ = gamma + d_g
             beta_ = beta + d_b
             gamma__ = tf.transpose(tf.stack([gamma_]*hei), [1, 0, 2])
@@ -34,13 +35,13 @@ def cond_batch_norm(x, c=None, hidden_size=64, name='cbn'):
         out = gamma__ * x_norm + beta__
         return out
 
-def cbn_func(x, n_dim, f_num, name="cbn_func"):
+def embedding(y, in_size, out_size, name='emb'):
     with tf.variable_scope(name) as scope:
-        x = linear(x, n_dim, name='l1')
-        x = tf.nn.relu(x, name='relu')
-        x = linear(x, f_num, name='l2')
-    return x
-
+        V = tf.get_variable('w', [in_size, out_size], initializer=tf.truncated_normal_initializer(stddev=1.0))
+        V = spec_norm(V)
+        o = tf.matmul(y, V)
+    return o
+    
 def lrelu(x, leak=0.2, name="lrelu"):
     with tf.variable_scope(name) as scope:
         return tf.maximum(x, leak*x)
@@ -104,7 +105,7 @@ def gaussian_noise_layer(x, std=0.05):
     return x + noise
 
 def upsampling(x, out_dim, scale=2, name='resize'):
-    return tf.image.resize_bilinear(x, [x.shape[1]*scale, x.shape[2]*scale])
+    return tf.image.resize_nearest_neighbor(x, [x.shape[2]*scale, x.shape[2]*scale])
 
 def resize_conv(x, out_dim, name='resize_Conv', c=4, k=1, bn=True, func=True):
         x = tf.image.resize_bilinear(x, [x.shape[1]*2, x.shape[2]*2])
@@ -140,12 +141,6 @@ def batch_dot(a, b):
 def l2_norm(v, eps=1e-12):
     return v / (tf.reduce_sum(v**2)**0.5+eps)
 
-def embedding(y, in_size, out_size):
-    V = tf.get_variable('v', [in_size, out_size], initializer=tf.truncated_normal_initializer(stddev=1.0))
-    V = spec_norm(V)
-    o = tf.matmul(y, V)
-    return o
-    
 def spec_norm(w):
     w_shape = w.shape.as_list()
     w = tf.reshape(w, [-1, w_shape[-1]])
