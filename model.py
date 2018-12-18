@@ -71,7 +71,7 @@ class wic_model():
 
         gen_loss = tf.reduce_mean(tf.reduce_sum(tf.math.softplus(-dis_o_fake), axis=1))
 
-        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - gen_o_from_enc),[1, 2, 3])/(self.img_h * self.img_w)))
+        RMS_loss = tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(self.x_ - gen_o),[1, 2, 3])/(self.img_h * self.img_w)))
 
         #Optimizers
 
@@ -90,7 +90,6 @@ class wic_model():
         summary_dict = {
             'loss/gen': gen_loss,
             'loss/disc': disc_loss,
-            'loss/rec': rec_loss,
             'eval/rms': RMS_loss
         }
 
@@ -104,7 +103,7 @@ class wic_model():
         a_1h_img = tf.reshape(tf.transpose(tf.stack([self.a_1h]*4),[1, 0, 2]), [self.batch_size, 2, 2*2*self.a_num, 1])
         self.a_1h_img = tf.summary.image('a_1h_img', tf.cast(a_1h_img*255., tf.uint8), self.batch_size, collections=['train', 'test'])
         self.sum_img = tf.summary.image('from_noise', tf.cast((gen_o+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
-        self.sum_img_ = tf.summary.image('output_image', tf.cast((gen_o_from_enc+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
+        #self.sum_img_ = tf.summary.image('output_image', tf.cast((gen_o_from_enc+1.)*127.5, tf.uint8), self.batch_size, collections=['train', 'test'])
 
         [tf.summary.histogram(v.name, v, collections=['train']) for v in train_vars if ('w' in v.name)]
 
@@ -134,17 +133,16 @@ class wic_model():
             c2 = tf.layers.average_pooling2d(c2, 2, 2, padding='same', name='avrpoo2')
         return c_s + c2
 
-    def res_block_up(self, x, a, o_dim, first_layer=False, final_layer=False, name='res_block_up'):
+    def res_block_up(self, x, a, o_dim, name='res_block_up'):
         with tf.variable_scope(name) as scope:
-            if final_layer: o_dim = 3
             c_s = upsampling(x, x.shape[-1], name='up_s')
-            c_s = conv(c_s, o_dim, c=1, k=1, name='skip_conv', padding='same', func=False, bn=False)
+            c_s = conv(c_s, o_dim, c=1, k=1, name='skip_conv', func=False, bn=False)
             
             x = tf.nn.relu(cond_batch_norm(x, a, name='cbn1'))
             x = conv(x, o_dim, c=3, k=1, bn=False, name='conv1')
             x = tf.nn.relu(cond_batch_norm(x, a, name='cbn2'))
             x = upsampling(x, o_dim, name='up')
-            x = conv(x, o_dim, c=3, k=1, name='conv2', func=final_layer, bn=False)
+            x = conv(x, o_dim, c=3, k=1, name='conv2', bn=False)
         return c_s + x
 
     def encoder(self, x, a, name='encoder', reuse=False):
@@ -208,11 +206,12 @@ class wic_model():
             #print("self-attention x->x")
             for i in range(half,self.layer_num):
                 z = self.res_block_up(z, a, ch//2,
-                                    final_layer=(i==self.layer_num-1),
                                     name='gen_b_up2_'+str(i)
                                 )
                 ch = ch//2
                 if not reuse: print(z.shape)
+            z = tf.nn.relu(batch_norm(z, name='gen_bn'))
+            z = conv(z, self.img_ch, c=3, k=1, bn=False, name='gen_final_conv')
             return tf.nn.tanh(z)
 
     def attention(self, x, ch, sn=True, name='attention', reuse=False):
@@ -237,7 +236,7 @@ class wic_model():
                 o[i][2*j+1] = a[i][j]
         return o
 
-    def train(self):
+    def train(self, pre_train=True):
         tf.global_variables_initializer().run()
         self.saver = tf.train.Saver()
         per_epoch = len(self.train_image) // self.batch_size
@@ -257,9 +256,11 @@ class wic_model():
                 train_a_1h = self.trans_a(train_a)
                 train_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
                 train_feed = {self.x: train_x, self.a: train_a, self.a_1h: train_a_1h, self.z: train_z, self.training: True}
-                self.sess.run(self.disc_optimizer, feed_dict=train_feed)
-                self.sess.run(self.gen_optimizer, feed_dict=train_feed)
-                self.sess.run([self.enc_optimizer] + self.update_met_list, feed_dict=train_feed)
+                if pre_train:
+                    self.sess.run(self.disc_optimizer, feed_dict=train_feed)
+                    self.sess.run([self.gen_optimizer] + self.update_met_list, feed_dict=train_feed)
+                else:
+                    self.sess.run([self.enc_optimizer] + self.update_met_list, feed_dict=train_feed)
 
             train_x = self.train_image[:self.batch_size]
             train_a = self.train_attr[:self.batch_size]

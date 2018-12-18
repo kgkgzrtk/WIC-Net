@@ -38,8 +38,8 @@ def cond_batch_norm(x, c=None, name='cbn'):
 def embedding(y, in_size, out_size, name='emb'):
     with tf.variable_scope(name) as scope:
         V = tf.get_variable('w', [in_size, out_size], initializer=tf.truncated_normal_initializer(stddev=1.0))
-        V = spec_norm(V)
-        o = tf.matmul(y, V)
+        V_ = spec_norm(V)
+        o = tf.matmul(y, V_)
     return o
     
 def lrelu(x, leak=0.2, name="lrelu"):
@@ -50,15 +50,15 @@ def swish(x, name="swish"):
     with tf.variable_scope(name) as scope:
         return x*tf.sigmoid(x)
 
-def linear(input_, output_size, sn=True, name='linear_layer'):
+def linear(input_, output_size, name='linear_layer'):
     with tf.variable_scope(name) as scope:
         input_ = tf.layers.flatten(input_)
         shape = input_.shape[-1]
         stddev = np.sqrt(1./output_size)
         W = tf.get_variable('w', [shape, output_size], initializer=tf.truncated_normal_initializer(0.0, stddev))
-        if sn: W = spec_norm(W)
+        W_ = spec_norm(W)
         b = tf.get_variable('b', [output_size], initializer=tf.constant_initializer(0.0))
-        return tf.matmul(input_, W) + b
+        return tf.matmul(input_, W_) + b
 
 def conv(x, out_dim, name='Conv', c=3, k=2, stddev=0.02, padding='SAME', bn=True, sn=True, func=False, func_factor=0.0):
     with tf.variable_scope(name) as scope:
@@ -138,18 +138,15 @@ def batch_dot(a, b):
     b = tf.expand_dims(b, 2)
     return tf.matmul(a,b)
 
-def l2_norm(v, eps=1e-12):
-    return v / (tf.reduce_sum(v**2)**0.5+eps)
-
 def spec_norm(w):
     w_shape = w.shape.as_list()
     w = tf.reshape(w, [-1, w_shape[-1]])
     u = tf.get_variable("u", [1, w_shape[-1]], initializer=tf.truncated_normal_initializer(), trainable=False)
     u_hat = u
     v_ = tf.matmul(u_hat, tf.transpose(w))
-    v_hat = l2_norm(v_)
+    v_hat = tf.nn.l2_normalize(v_)
     u_ = tf.matmul(v_hat, w)
-    u_hat = l2_norm(u_)
+    u_hat = tf.nn.l2_normalize(u_)
 
     u_hat = tf.stop_gradient(u_hat)
     v_hat = tf.stop_gradient(v_hat)

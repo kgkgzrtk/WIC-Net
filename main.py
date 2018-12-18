@@ -33,14 +33,15 @@ def main():
     #config.gpu_options.allow_growth=True
     with tf.Session(config=config) as sess:
         model = wic_model(sess, args)
-        model.load_data()
         model.build()
         if model.load_name is None:
+            model.load_data()
             model.train()
         else:
             model.load_model()
             model.load_data()
-            model.weather_run(model.test_image[:model.batch_size], model.test_attr[:model.batch_size], 2, save=True)
+            #model.weather_run(model.test_image[:model.batch_size], model.test_attr[:model.batch_size], 2, save=True)
+            model.train()
         sess.close()
 
 if __name__ == "__main__":
