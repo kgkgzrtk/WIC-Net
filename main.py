@@ -36,6 +36,7 @@ def main():
         model.build()
         if model.load_name is None:
             model.load_data()
+            model.write_tfr('data.tfrecord')
             model.train()
         else:
             model.load_model()

@@ -360,6 +360,9 @@ class wic_model():
         self.test_image = np.asarray(test_image)
         self.test_attr = np.asarray(test_attr)
 
+    def write_tfr(self, filename):
+        write_tfrecord(self.train_image+self.test_image, self.train_attr+self.test_attr, filename)
+
     def normalize(self, df):
         df_ = df.copy()
         for c_name in df.columns[1:]:

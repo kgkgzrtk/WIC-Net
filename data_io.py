@@ -34,6 +34,17 @@ def load_json_file(data_num, load_csv=False, save_csv=False):
         if save_csv: df_.to_csv(save_path)
         return df_
 
+def write_tfrecord(images, labels, filename):
+    filename = 'data.tfrecord'
+    writer = tf.python_io.TFRecordWriter(filename)
+    for image, label in zip(images, labels)
+        img_feat = tf.train.Feature(bytes_list=tf.train.BytesList(value=[image.tobytes()]))
+        label_feat = tf.train.Feature(bytes_list=tf.train.BytesList(value=[label.tobytes()]))
+        ex = tf.train.Example({'image' : img_feat, 'label' : label_faet})
+        writer.write(ex.SerializeToString())
+    writer.close()
+
+
 def float_force(x):
     try: return np.float(x)
     except ValueError:
